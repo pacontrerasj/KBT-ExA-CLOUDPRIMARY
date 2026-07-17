@@ -98,13 +98,11 @@ jobs:
 
             cd ${{ env.APP_DIR }}
 
-            cat > .env << EOF
-            DB_HOST=${DB_HOST}
-            DB_USER=${DB_USER}
-            DB_PASSWORD=${DB_PASSWORD}
-            DB_NAME=${DB_NAME}
-            DB_PORT=${DB_PORT}
-            EOF
+            printf 'DB_HOST=%s\n' "$DB_HOST" > .env
+            printf 'DB_USER=%s\n' "$DB_USER" >> .env
+            printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD" >> .env
+            printf 'DB_NAME=%s\n' "$DB_NAME" >> .env
+            printf 'DB_PORT=%s\n' "$DB_PORT" >> .env
 
             echo "$ECR_PASSWORD" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
             docker compose pull
