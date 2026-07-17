@@ -56,6 +56,17 @@ jobs:
           echo "::add-mask::$PASSWORD"
           echo "ecr_password=$PASSWORD" >> $GITHUB_OUTPUT
 
+      - name: Preparar directorio en EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.terraform.outputs.ec2_host }}
+          username: ${{ vars.EC2_USER || 'ec2-user' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sudo mkdir -p ${{ env.APP_DIR }}
+            sudo chown -R ${{ vars.EC2_USER || 'ec2-user' }}:${{ vars.EC2_USER || 'ec2-user' }} ${{ env.APP_DIR }}
+            sudo chmod 755 ${{ env.APP_DIR }}
+
       - name: Copiar docker-compose.yml a EC2
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -64,6 +75,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "tienda-vehiculos-EC2/docker-compose.yml"
           target: ${{ env.APP_DIR }}/
+          strip_components: 1
 
       - name: Deploy via SSH a EC2
         uses: appleboy/ssh-action@v1.0.3
