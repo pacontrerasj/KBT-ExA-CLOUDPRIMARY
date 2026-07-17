@@ -85,7 +85,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
-            export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+            AWS_ACCOUNT_ID=$(echo "${{ needs.terraform.outputs.ecr_frontend }}" | cut -d'.' -f1)
+            export AWS_ACCOUNT_ID
             export AWS_REGION=${{ env.AWS_REGION }}
             export DB_HOST=${{ needs.terraform.outputs.rds_endpoint }}
             export DB_USER=${{ secrets.DB_USER || 'admin' }}
