@@ -1,0 +1,85 @@
+name: "Reusable — Docker Build & Push to ECR"
+
+on:
+  workflow_call:
+    inputs:
+      frontend_context:
+        description: "Ruta al contexto del Dockerfile frontend"
+        required: true
+        type: string
+      frontend_dockerfile:
+        description: "Ruta al Dockerfile frontend"
+        required: true
+        type: string
+      backend_context:
+        description: "Ruta al contexto del Dockerfile backend"
+        required: true
+        type: string
+      backend_dockerfile:
+        description: "Ruta al Dockerfile backend"
+        required: true
+        type: string
+      aws_region:
+        description: "Región de AWS"
+        required: false
+        type: string
+        default: "us-east-1"
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SESSION_TOKEN:
+        required: true
+    inputs:
+      ecr_frontend_url:
+        description: "URL del repositorio ECR frontend"
+        required: true
+        type: string
+      ecr_backend_url:
+        description: "URL del repositorio ECR backend"
+        required: true
+        type: string
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+
+jobs:
+  build-and-push:
+    name: "Build & Push Docker Images"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login a Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build y push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.frontend_context }}
+          file: ${{ inputs.frontend_dockerfile }}
+          push: true
+          tags: |
+            ${{ inputs.ecr_frontend_url }}:${{ github.sha }}
+            ${{ inputs.ecr_frontend_url }}:latest
+
+      - name: Build y push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.backend_context }}
+          file: ${{ inputs.backend_dockerfile }}
+          push: true
+          tags: |
+            ${{ inputs.ecr_backend_url }}:${{ github.sha }}
+            ${{ inputs.ecr_backend_url }}:latest

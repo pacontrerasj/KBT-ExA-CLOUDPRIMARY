@@ -1,0 +1,145 @@
+name: "Reusable — Terraform Deploy"
+
+on:
+  workflow_call:
+    inputs:
+      tf_root:
+        description: "Ruta al directorio raíz de Terraform"
+        required: true
+        type: string
+      aws_region:
+        description: "Región de AWS"
+        required: false
+        type: string
+        default: "us-east-1"
+      terraform_version:
+        description: "Versión de Terraform a usar"
+        required: false
+        type: string
+        default: "1.8.5"
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SESSION_TOKEN:
+        required: true
+      SSH_PRIVATE_KEY:
+        required: false
+      MI_IP:
+        required: true
+      KEY_NAME:
+        required: true
+    outputs:
+      ec2_host:
+        description: "IP pública de la EC2"
+        value: ${{ jobs.deploy.outputs.ec2_host }}
+      ecr_frontend:
+        description: "URL del repositorio ECR frontend"
+        value: ${{ jobs.deploy.outputs.ecr_frontend }}
+      ecr_backend:
+        description: "URL del repositorio ECR backend"
+        value: ${{ jobs.deploy.outputs.ecr_backend }}
+      rds_endpoint:
+        description: "Endpoint de RDS"
+        value: ${{ jobs.deploy.outputs.rds_endpoint }}
+      rds_port:
+        description: "Puerto de RDS"
+        value: ${{ jobs.deploy.outputs.rds_port }}
+      db_password:
+        description: "Password generado para RDS"
+        value: ${{ jobs.deploy.outputs.db_password }}
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+  TF_ROOT: ${{ inputs.tf_root }}
+
+jobs:
+  deploy:
+    name: "Terraform Apply"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_ROOT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Terraform Init
+        run: terraform init -reconfigure -input=false -no-color
+
+      - name: Verificar state en S3
+        id: check_state
+        run: |
+          BUCKET=$(grep -oP 'bucket\s*=\s*"\K[^"]' main.tf state.tf 2>/dev/null | head -1)
+          if [ -n "$BUCKET" ] && aws s3api head-object --bucket "$BUCKET" --key infra/terraform.tfstate 2>/dev/null; then
+            echo "STATE_EXISTS=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "STATE_EXISTS=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Limpiar recursos duplicados (solo si no hay state)
+        if: steps.check_state.outputs.STATE_EXISTS == 'false'
+        continue-on-error: true
+        run: |
+          aws ecr delete-repository --repository-name tienda-vehiculos-frontend --force 2>/dev/null || true
+          aws ecr delete-repository --repository-name tienda-vehiculos-backend --force 2>/dev/null || true
+          aws rds delete-db-subnet-group --db-subnet-group-name subnet-group-tienda-vehiculos 2>/dev/null || true
+
+      - name: Terraform Plan
+        run: |
+          set -o pipefail
+          terraform plan -no-color -out=tfplan \
+            -var="mi_ip=${{ secrets.MI_IP }}" \
+            -var="key_name=${{ secrets.KEY_NAME }}" \
+            -var="existing_vpc_id=${{ vars.EXISTING_VPC_ID || '' }}" 2>&1 | tee tfplan.log
+
+      - name: Terraform Apply
+        run: |
+          set -o pipefail
+          terraform apply -auto-approve -input=false -no-color \
+            -var="mi_ip=${{ secrets.MI_IP }}" \
+            -var="key_name=${{ secrets.KEY_NAME }}" \
+            -var="existing_vpc_id=${{ vars.EXISTING_VPC_ID || '' }}" 2>&1 | tee tfapply.log
+          echo "---"
+          echo "Últimas 50 líneas del log:"
+          tail -n 50 tfapply.log
+
+      - name: Obtener outputs
+        id: outputs
+        if: success()
+        run: |
+          safe_output() {
+            val=$(terraform output -raw "$1" 2>/dev/null || echo "")
+            echo "$val"
+          }
+          echo "EC2_HOST=$(safe_output ec2_public_ip)" >> $GITHUB_OUTPUT
+          echo "ECR_FRONTEND=$(safe_output ecr_frontend_url)" >> $GITHUB_OUTPUT
+          echo "ECR_BACKEND=$(safe_output ecr_backend_url)" >> $GITHUB_OUTPUT
+          echo "RDS_ENDPOINT=$(safe_output rds_endpoint)" >> $GITHUB_OUTPUT
+          echo "RDS_PORT=$(safe_output rds_port)" >> $GITHUB_OUTPUT
+          DB_PASS=$(safe_output db_password)
+          echo "::add-mask::$DB_PASS"
+          echo "DB_PASSWORD=$DB_PASS" >> $GITHUB_OUTPUT
+
+    outputs:
+      ec2_host: ${{ steps.outputs.outputs.EC2_HOST }}
+      ecr_frontend: ${{ steps.outputs.outputs.ECR_FRONTEND }}
+      ecr_backend: ${{ steps.outputs.outputs.ECR_BACKEND }}
+      rds_endpoint: ${{ steps.outputs.outputs.RDS_ENDPOINT }}
+      rds_port: ${{ steps.outputs.outputs.RDS_PORT }}
+      db_password: ${{ steps.outputs.outputs.DB_PASSWORD }}

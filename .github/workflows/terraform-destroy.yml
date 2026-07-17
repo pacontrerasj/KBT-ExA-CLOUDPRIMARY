@@ -1,0 +1,73 @@
+name: "Reusable — Terraform Destroy"
+
+on:
+  workflow_call:
+    inputs:
+      tf_root:
+        description: "Ruta al directorio raíz de Terraform"
+        required: true
+        type: string
+      aws_region:
+        description: "Región de AWS"
+        required: false
+        type: string
+        default: "us-east-1"
+      terraform_version:
+        description: "Versión de Terraform a usar"
+        required: false
+        type: string
+        default: "1.8.5"
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SESSION_TOKEN:
+        required: true
+      MI_IP:
+        required: true
+      KEY_NAME:
+        required: true
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+  TF_ROOT: ${{ inputs.tf_root }}
+
+jobs:
+  destroy:
+    name: "Terraform Destroy"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_ROOT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Terraform Init
+        run: terraform init -reconfigure -input=false -no-color
+
+      - name: Terraform Destroy
+        run: |
+          set -o pipefail
+          terraform destroy -auto-approve -input=false -no-color \
+            -var="mi_ip=${{ secrets.MI_IP }}" \
+            -var="key_name=${{ secrets.KEY_NAME }}" \
+            -var="existing_vpc_id=${{ vars.EXISTING_VPC_ID || '' }}" 2>&1 | tee tfdestroy.log
+          echo "---"
+          echo "Últimas 50 líneas del log:"
+          tail -n 50 tfdestroy.log

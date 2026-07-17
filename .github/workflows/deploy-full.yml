@@ -1,0 +1,99 @@
+name: "Full Deploy — Terraform + Docker + Deploy"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  TF_ROOT: tienda-vehiculos-EC2/terraform
+  APP_DIR: /home/ec2-user/tienda-vehiculos
+
+jobs:
+  terraform:
+    name: Terraform Apply
+    uses: ./terraform-deploy.yml
+    with:
+      tf_root: ${{ env.TF_ROOT }}
+      aws_region: ${{ env.AWS_REGION }}
+    secrets: inherit
+
+  build-and-push:
+    needs: terraform
+    name: Build & Push Docker
+    uses: ./docker-build-push.yml
+    with:
+      frontend_context: tienda-vehiculos-EC2/tienda-vehiculos-frontend
+      frontend_dockerfile: tienda-vehiculos-EC2/tienda-vehiculos-frontend/Dockerfile
+      backend_context: tienda-vehiculos-EC2/tienda-vehiculos-backend
+      backend_dockerfile: tienda-vehiculos-EC2/tienda-vehiculos-backend/Dockerfile
+      aws_region: ${{ env.AWS_REGION }}
+      ecr_frontend_url: ${{ needs.terraform.outputs.ecr_frontend }}
+      ecr_backend_url: ${{ needs.terraform.outputs.ecr_backend }}
+    secrets: inherit
+
+  deploy:
+    needs: [terraform, build-and-push]
+    name: Deploy a EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Obtener token ECR
+        id: ecr
+        run: |
+          PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          echo "::add-mask::$PASSWORD"
+          echo "ecr_password=$PASSWORD" >> $GITHUB_OUTPUT
+
+      - name: Copiar docker-compose.yml a EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ needs.terraform.outputs.ec2_host }}
+          username: ${{ vars.EC2_USER || 'ec2-user' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "tienda-vehiculos-EC2/docker-compose.yml"
+          target: ${{ env.APP_DIR }}/
+
+      - name: Deploy via SSH a EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.terraform.outputs.ec2_host }}
+          username: ${{ vars.EC2_USER || 'ec2-user' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+            export AWS_REGION=${{ env.AWS_REGION }}
+            export DB_HOST=${{ needs.terraform.outputs.rds_endpoint }}
+            export DB_USER=${{ secrets.DB_USER || 'admin' }}
+            export DB_PASSWORD=${{ needs.terraform.outputs.db_password }}
+            export DB_NAME=${{ vars.DB_NAME || 'tienda_vehiculos' }}
+            export DB_PORT=${{ needs.terraform.outputs.rds_port }}
+            export IMAGE_TAG=${{ github.sha }}
+            export ECR_PASSWORD='${{ steps.ecr.outputs.ecr_password }}'
+
+            cd ${{ env.APP_DIR }}
+
+            cat > .env << EOF
+            DB_HOST=${DB_HOST}
+            DB_USER=${DB_USER}
+            DB_PASSWORD=${DB_PASSWORD}
+            DB_NAME=${DB_NAME}
+            DB_PORT=${DB_PORT}
+            EOF
+
+            echo "$ECR_PASSWORD" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+            docker compose pull
+            docker compose up -d
+            docker system prune -af
